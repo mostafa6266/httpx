@@ -542,6 +542,7 @@ class Response:
 
         self.is_closed = False
         self.is_stream_consumed = False
+        self._aclose_failed = False
 
         self.default_encoding = default_encoding
 
@@ -863,13 +864,21 @@ class Response:
         return {
             name: value
             for name, value in self.__dict__.items()
-            if name not in ["extensions", "stream", "is_closed", "_decoder"]
+            if name
+            not in [
+                "extensions",
+                "stream",
+                "is_closed",
+                "_decoder",
+                "_aclose_failed",
+            ]
         }
 
     def __setstate__(self, state: dict[str, typing.Any]) -> None:
         for name, value in state.items():
             setattr(self, name, value)
         self.is_closed = True
+        self._aclose_failed = False
         self.extensions = {}
         self.stream = UnattachedStream()
 
@@ -1066,14 +1075,22 @@ class Response:
         """
         Close the response and release the connection.
         Automatically called if the response body is read to completion.
+
+        If closing fails, a later call retries cleanup. The response remains
+        closed to further streaming.
         """
         if not isinstance(self.stream, AsyncByteStream):
             raise RuntimeError("Attempted to call an async close on a sync stream.")
 
-        if not self.is_closed:
+        if not self.is_closed or self._aclose_failed:
             self.is_closed = True
-            with request_context(request=self._request):
-                await self.stream.aclose()
+            self._aclose_failed = False
+            try:
+                with request_context(request=self._request):
+                    await self.stream.aclose()
+            except BaseException:
+                self._aclose_failed = True
+                raise
 
 
 class Cookies(typing.MutableMapping[str, str]):
